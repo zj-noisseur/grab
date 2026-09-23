@@ -1,6 +1,13 @@
 """
 Grab-Style Geocoding & Ride Fare Calculation CLI.
-Step 3: Interactive CLI experience using Questionary prompts and custom styling.
+
+Features:
+- State selection to contextualize address queries.
+- Nominatim OpenStreetMap search API for geocoding human-readable addresses to coordinates.
+- Interactive questionary selection with search amendment / re-query capabilities.
+- Weather and Traffic multiplier adjustments.
+- Distance calculation via Haversine formula.
+- Final price computation: Distance * base_price * weather_multiplier * traffic_multiplier.
 """
 
 import sys
@@ -23,8 +30,8 @@ CUSTOM_STYLE = Style([
 ])
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-USER_AGENT = "GrabPricingCLI/1.0"
-BASE_PRICE_PER_KM = 2.50
+USER_AGENT = "GrabPricingCLI/1.0 (terminal_fare_calculator)"
+BASE_PRICE_PER_KM = 2.50  # Base price in RM per KM
 
 MALAYSIA_STATES = [
     "Kuala Lumpur",
@@ -61,7 +68,7 @@ TRAFFIC_OPTIONS = {
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Compute great-circle distance between two points on Earth in kilometers."""
-    r = 6371.0
+    r = 6371.0  # Earth's mean radius in km
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
     delta_phi = math.radians(lat2 - lat1)
@@ -76,9 +83,10 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
 
 
 def query_nominatim(query: str, state: str = None) -> list[dict]:
-    """Query Nominatim search API for geocoding coordinates with state context."""
+    """Query Nominatim search API for geocoding suggestions."""
     search_q = query.strip()
     if state and state != "All / Other (Worldwide)":
+        # Include state in query context if not already present
         if state.lower() not in search_q.lower():
             search_q = f"{search_q}, {state}"
 
@@ -86,32 +94,39 @@ def query_nominatim(query: str, state: str = None) -> list[dict]:
         "q": search_q,
         "format": "json",
         "addressdetails": 1,
-        "limit": 5,
+        "limit": 6,
     }
-    headers = {"User-Agent": USER_AGENT}
+    headers = {
+        "User-Agent": USER_AGENT,
+    }
 
     try:
         response = requests.get(NOMINATIM_URL, params=params, headers=headers, timeout=10)
         response.raise_for_status()
-        return response.json()
+        results = response.json()
+        return results
     except requests.RequestException as e:
-        print(f"Error querying Nominatim: {e}")
+        print(f"\n[!] Error connecting to Nominatim server: {e}")
         return []
 
 
-def prompt_location(label: str, state: str) -> dict:
-    """Prompt user using questionary text prompt and fetch top coordinate."""
+def prompt_location_search(label: str, state: str) -> dict:
+    """Prompt user to type address, search Nominatim, and select or amend query."""
+    query = ""
     while True:
-        query = questionary.text(
+        # Prompt for query text
+        default_query = query if query else ""
+        query_input = questionary.text(
             f"Enter {label} location keyword/address:",
+            default=default_query,
             style=CUSTOM_STYLE,
         ).ask()
 
-        if query is None:
-            print("\nOperation cancelled.")
+        if query_input is None:
+            print("\nOperation cancelled by user.")
             sys.exit(0)
 
-        query = query.strip()
+        query = query_input.strip()
         if not query:
             print("Please enter a non-empty search term.")
             continue
@@ -120,76 +135,184 @@ def prompt_location(label: str, state: str) -> dict:
         results = query_nominatim(query, state=state)
 
         if not results:
-            print(f"⚠️ No matching locations found for '{query}'. Please try again.")
+            print(f"⚠️  No matching locations found for '{query}'.")
+            action = questionary.select(
+                "How would you like to proceed?",
+                choices=[
+                    "✏️  Amend search query and try again",
+                    "❌ Cancel",
+                ],
+                style=CUSTOM_STYLE,
+            ).ask()
+
+            if action == "✏️  Amend search query and try again":
+                continue
+            else:
+                print("\nExiting.")
+                sys.exit(0)
+
+        # Build dropdown options
+        choices = []
+        result_map = {}
+        for idx, item in enumerate(results):
+            display_name = item.get("display_name", "")
+            lat = float(item.get("lat", 0.0))
+            lon = float(item.get("lon", 0.0))
+            # Truncate display name if too long for clean CLI rendering
+            short_name = display_name if len(display_name) <= 85 else display_name[:82] + "..."
+            choice_label = f"{idx + 1}. {short_name} ({lat:.4f}, {lon:.4f})"
+            choices.append(choice_label)
+            result_map[choice_label] = {
+                "display_name": display_name,
+                "lat": lat,
+                "lon": lon,
+            }
+
+        choices.append("✏️  Amend query and search again")
+        choices.append("❌ Cancel")
+
+        selected = questionary.select(
+            f"Select matching {label} location:",
+            choices=choices,
+            style=CUSTOM_STYLE,
+        ).ask()
+
+        if selected is None or selected == "❌ Cancel":
+            print("\nOperation cancelled.")
+            sys.exit(0)
+
+        if selected == "✏️  Amend query and search again":
             continue
 
-        top = results[0]
-        selected = {
-            "display_name": top.get("display_name"),
-            "lat": float(top.get("lat")),
-            "lon": float(top.get("lon")),
-        }
-        print(f"✓ Confirmed {label}: {selected['display_name']} [{selected['lat']:.5f}, {selected['lon']:.5f}]\n")
-        return selected
+        selected_loc = result_map[selected]
+        print(f"✓ Confirmed {label}: {selected_loc['display_name']} [{selected_loc['lat']:.5f}, {selected_loc['lon']:.5f}]")
+        return selected_loc
+
+
+def print_banner():
+    """Display program header."""
+    print("=" * 72)
+    print("  🚗 GRAB FARE ESTIMATOR & NOMINATIM GEOCODING CLI")
+    print("=" * 72)
+    print("  • Reverse geocodes your address via OpenStreetMap Nominatim.")
+    print("  • Computes trip distance, surge multipliers, and estimated fare.")
+    print("=" * 72 + "\n")
+
+
+def print_receipt(
+    pickup: dict,
+    dest: dict,
+    distance_km: float,
+    base_price: float,
+    weather_name: str,
+    weather_mult: float,
+    traffic_name: str,
+    traffic_mult: float,
+    final_price: float,
+):
+    """Print an itemized trip summary and fare calculation."""
+    print("\n" + "=" * 72)
+    print("                     TRIP SUMMARY & FARE RECEIPT                     ")
+    print("=" * 72)
+    print(f"📍 Pickup Location   : {pickup['display_name']}")
+    print(f"   Coordinates       : {pickup['lat']:.5f}, {pickup['lon']:.5f}")
+    print("-" * 72)
+    print(f"🏁 Destination       : {dest['display_name']}")
+    print(f"   Coordinates       : {dest['lat']:.5f}, {dest['lon']:.5f}")
+    print("-" * 72)
+    print(f"📏 Estimated Distance: {distance_km:.2f} km")
+    print(f"💵 Base Rate         : RM {base_price:.2f} / km")
+    print(f"🌦️ Weather Factor   : {weather_name} ({weather_mult:.2f}x)")
+    print(f"🚦 Traffic Factor   : {traffic_name} ({traffic_mult:.2f}x)")
+    print("-" * 72)
+    print("Fare Formula: Distance * Base Price * Weather Multiplier * Traffic Multiplier")
+    print(f"Calculation : {distance_km:.2f} km * RM {base_price:.2f} * {weather_mult:.2f} * {traffic_mult:.2f}")
+    print("=" * 72)
+    print(f"💰 ESTIMATED FARE   : RM {final_price:.2f}")
+    print("=" * 72 + "\n")
 
 
 def main():
-    print("=" * 60)
-    print("  🚗 GRAB FARE ESTIMATOR (QUESTIONARY PROMPTS)")
-    print("=" * 60 + "\n")
+    try:
+        print_banner()
 
-    # Step 1: State selection
-    state = questionary.select(
-        "Step 1: Select your State / Region for geocoding context:",
-        choices=MALAYSIA_STATES,
-        style=CUSTOM_STYLE,
-    ).ask()
+        # Step 1: Select state
+        state = questionary.select(
+            "Step 1: Select your State / Region for geocoding context:",
+            choices=MALAYSIA_STATES,
+            style=CUSTOM_STYLE,
+        ).ask()
 
-    if state is None:
+        if state is None:
+            print("\nOperation cancelled.")
+            sys.exit(0)
+
+        print(f"Selected Region: {state}\n")
+
+        # Step 2: Pickup location geocoding
+        print("Step 2: Geocode Pickup Location")
+        pickup_loc = prompt_location_search("Pickup", state)
+
+        # Step 3: Destination location geocoding
+        print("\nStep 3: Geocode Destination Location")
+        dest_loc = prompt_location_search("Destination", state)
+
+        # Step 4: Weather condition
+        print("\nStep 4: Weather Condition")
+        weather_choice = questionary.select(
+            "Select current weather condition:",
+            choices=list(WEATHER_OPTIONS.keys()),
+            style=CUSTOM_STYLE,
+        ).ask()
+
+        if weather_choice is None:
+            print("\nOperation cancelled.")
+            sys.exit(0)
+
+        weather_info = WEATHER_OPTIONS[weather_choice]
+
+        # Step 5: Traffic condition
+        print("\nStep 5: Traffic Condition")
+        traffic_choice = questionary.select(
+            "Select current traffic condition:",
+            choices=list(TRAFFIC_OPTIONS.keys()),
+            style=CUSTOM_STYLE,
+        ).ask()
+
+        if traffic_choice is None:
+            print("\nOperation cancelled.")
+            sys.exit(0)
+
+        traffic_info = TRAFFIC_OPTIONS[traffic_choice]
+
+        # Step 6: Calculation
+        distance_km = haversine_distance(
+            pickup_loc["lat"], pickup_loc["lon"], dest_loc["lat"], dest_loc["lon"]
+        )
+
+        final_price = (
+            distance_km
+            * BASE_PRICE_PER_KM
+            * weather_info["multiplier"]
+            * traffic_info["multiplier"]
+        )
+
+        # Step 7: Display summary receipt
+        print_receipt(
+            pickup=pickup_loc,
+            dest=dest_loc,
+            distance_km=distance_km,
+            base_price=BASE_PRICE_PER_KM,
+            weather_name=weather_info["name"],
+            weather_mult=weather_info["multiplier"],
+            traffic_name=traffic_info["name"],
+            traffic_mult=traffic_info["multiplier"],
+            final_price=final_price,
+        )
+
+    except KeyboardInterrupt:
+        print("\n[!] Program interrupted. Goodbye!")
         sys.exit(0)
-
-    # Step 2 & 3: Pickup & Destination
-    pickup = prompt_location("Pickup", state)
-    dest = prompt_location("Destination", state)
-
-    # Step 4: Weather selection
-    weather_choice = questionary.select(
-        "Step 4: Select current weather condition:",
-        choices=list(WEATHER_OPTIONS.keys()),
-        style=CUSTOM_STYLE,
-    ).ask()
-
-    if weather_choice is None:
-        sys.exit(0)
-
-    weather_info = WEATHER_OPTIONS[weather_choice]
-
-    # Step 5: Traffic selection
-    traffic_choice = questionary.select(
-        "Step 5: Select current traffic condition:",
-        choices=list(TRAFFIC_OPTIONS.keys()),
-        style=CUSTOM_STYLE,
-    ).ask()
-
-    if traffic_choice is None:
-        sys.exit(0)
-
-    traffic_info = TRAFFIC_OPTIONS[traffic_choice]
-
-    # Calculations
-    distance_km = haversine_distance(pickup["lat"], pickup["lon"], dest["lat"], dest["lon"])
-    final_price = distance_km * BASE_PRICE_PER_KM * weather_info["multiplier"] * traffic_info["multiplier"]
-
-    print("\n" + "=" * 60)
-    print("                 TRIP SUMMARY & FARE                     ")
-    print("=" * 60)
-    print(f"Pickup     : {pickup['display_name']}")
-    print(f"Destination: {dest['display_name']}")
-    print(f"Distance   : {distance_km:.2f} km")
-    print(f"Weather    : {weather_info['name']} ({weather_info['multiplier']}x)")
-    print(f"Traffic    : {traffic_info['name']} ({traffic_info['multiplier']}x)")
-    print(f"Total Fare : RM {final_price:.2f}")
-    print("=" * 60 + "\n")
 
 
 if __name__ == "__main__":
