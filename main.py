@@ -249,71 +249,93 @@ def main():
 
         print(f"Selected Region: {state}\n")
 
-        # Step 2: Pickup location geocoding
-        print("Step 2: Geocode Pickup Location")
-        pickup_loc = prompt_location_search("Pickup", state)
+        # Allow the user to calculate multiple trips
+        while True:
 
-        # Step 3: Destination location geocoding
-        print("\nStep 3: Geocode Destination Location")
-        dest_loc = prompt_location_search("Destination", state)
+            # Step 2: Pickup location geocoding
+            print("Step 2: Geocode Pickup Location")
+            pickup_loc = prompt_location_search("Pickup", state)
 
-        # Step 4: Weather condition
-        print("\nStep 4: Weather Condition")
-        weather_choice = questionary.select(
-            "Select current weather condition:",
-            choices=list(WEATHER_OPTIONS.keys()),
-            style=CUSTOM_STYLE,
-        ).ask()
+            # Step 3: Destination location geocoding
+            print("\nStep 3: Geocode Destination Location")
+            dest_loc = prompt_location_search("Destination", state)
 
-        if weather_choice is None:
-            print("\nOperation cancelled.")
-            sys.exit(0)
+            # Step 4: Weather condition
+            print("\nStep 4: Weather Condition")
+            weather_choice = questionary.select(
+                "Select current weather condition:",
+                choices=list(WEATHER_OPTIONS.keys()),
+                style=CUSTOM_STYLE,
+            ).ask()
 
-        weather_info = WEATHER_OPTIONS[weather_choice]
+            if weather_choice is None:
+                print("\nOperation cancelled.")
+                sys.exit(0)
 
-        # Step 5: Traffic condition
-        print("\nStep 5: Traffic Condition")
-        traffic_choice = questionary.select(
-            "Select current traffic condition:",
-            choices=list(TRAFFIC_OPTIONS.keys()),
-            style=CUSTOM_STYLE,
-        ).ask()
+            weather_info = WEATHER_OPTIONS[weather_choice]
 
-        if traffic_choice is None:
-            print("\nOperation cancelled.")
-            sys.exit(0)
+            # Step 5: Traffic condition
+            print("\nStep 5: Traffic Condition")
+            traffic_choice = questionary.select(
+                "Select current traffic condition:",
+                choices=list(TRAFFIC_OPTIONS.keys()),
+                style=CUSTOM_STYLE,
+            ).ask()
 
-        traffic_info = TRAFFIC_OPTIONS[traffic_choice]
+            if traffic_choice is None:
+                print("\nOperation cancelled.")
+                sys.exit(0)
 
-        # Step 6: Calculation
-        distance_km = haversine_distance(
-            pickup_loc["lat"], pickup_loc["lon"], dest_loc["lat"], dest_loc["lon"]
-        )
+            traffic_info = TRAFFIC_OPTIONS[traffic_choice]
 
-        final_price = (
-            distance_km
-            * BASE_PRICE_PER_KM
-            * weather_info["multiplier"]
-            * traffic_info["multiplier"]
-        )
+            # Step 6: Calculation
+            distance_km = haversine_distance(
+                pickup_loc["lat"],
+                pickup_loc["lon"],
+                dest_loc["lat"],
+                dest_loc["lon"],
+            )
 
-        # Step 7: Display summary receipt
-        print_receipt(
-            pickup=pickup_loc,
-            dest=dest_loc,
-            distance_km=distance_km,
-            base_price=BASE_PRICE_PER_KM,
-            weather_name=weather_info["name"],
-            weather_mult=weather_info["multiplier"],
-            traffic_name=traffic_info["name"],
-            traffic_mult=traffic_info["multiplier"],
-            final_price=final_price,
-        )
+            final_price = (
+                distance_km
+                * BASE_PRICE_PER_KM
+                * weather_info["multiplier"]
+                * traffic_info["multiplier"]
+            )
+
+            # Step 7: Display summary receipt
+            print_receipt(
+                pickup=pickup_loc,
+                dest=dest_loc,
+                distance_km=distance_km,
+                base_price=BASE_PRICE_PER_KM,
+                weather_name=weather_info["name"],
+                weather_mult=weather_info["multiplier"],
+                traffic_name=traffic_info["name"],
+                traffic_mult=traffic_info["multiplier"],
+                final_price=final_price,
+            )
+
+            # Step 8: Ask whether to calculate another trip
+            calculate_again = questionary.confirm(
+                "Would you like to calculate another trip?",
+                default=True,
+                style=CUSTOM_STYLE,
+            ).ask()
+
+            if not calculate_again:
+                print(
+                    "\nThank you for using the Grab Fare Estimator. Goodbye!"
+                )
+                break
+
+            print("\n" + "-" * 72)
+            print("                     NEW TRIP CALCULATION")
+            print("-" * 72 + "\n")
 
     except KeyboardInterrupt:
         print("\n[!] Program interrupted. Goodbye!")
         sys.exit(0)
-
 
 if __name__ == "__main__":
     main()
