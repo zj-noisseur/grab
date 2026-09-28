@@ -211,26 +211,55 @@ def print_receipt(
     final_price: float,
 ):
     """Print an itemized trip summary and fare calculation."""
+
+    # Calculate fare components for a clearer breakdown
+    base_fare = distance_km * base_price
+
+    weather_surcharge = base_fare * (weather_mult - 1)
+    fare_after_weather = base_fare * weather_mult
+
+    traffic_surcharge = fare_after_weather * (traffic_mult - 1)
+
     print("\n" + "=" * 72)
     print("                     TRIP SUMMARY & FARE RECEIPT                     ")
     print("=" * 72)
+
     print(f"📍 Pickup Location   : {pickup['display_name']}")
     print(f"   Coordinates       : {pickup['lat']:.5f}, {pickup['lon']:.5f}")
+
     print("-" * 72)
+
     print(f"🏁 Destination       : {dest['display_name']}")
     print(f"   Coordinates       : {dest['lat']:.5f}, {dest['lon']:.5f}")
+
     print("-" * 72)
+
     print(f"📏 Estimated Distance: {distance_km:.2f} km")
     print(f"💵 Base Rate         : RM {base_price:.2f} / km")
     print(f"🌦️ Weather Factor   : {weather_name} ({weather_mult:.2f}x)")
     print(f"🚦 Traffic Factor   : {traffic_name} ({traffic_mult:.2f}x)")
+
     print("-" * 72)
+
+    print("                     FARE BREAKDOWN")
+    print("-" * 72)
+
+    print(f"Base Fare           : RM {base_fare:.2f}")
+    print(f"Weather Surcharge   : RM {weather_surcharge:.2f}")
+    print(f"Traffic Surcharge   : RM {traffic_surcharge:.2f}")
+
+    print("-" * 72)
+
     print("Fare Formula: Distance * Base Price * Weather Multiplier * Traffic Multiplier")
-    print(f"Calculation : {distance_km:.2f} km * RM {base_price:.2f} * {weather_mult:.2f} * {traffic_mult:.2f}")
+
+    print(
+        f"Calculation : {distance_km:.2f} km * RM {base_price:.2f} "
+        f"* {weather_mult:.2f} * {traffic_mult:.2f}"
+    )
+
     print("=" * 72)
     print(f"💰 ESTIMATED FARE   : RM {final_price:.2f}")
     print("=" * 72 + "\n")
-
 
 def main():
     try:
