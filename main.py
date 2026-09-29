@@ -7,11 +7,17 @@ Features:
 - Interactive questionary selection with search amendment / re-query capabilities.
 - Weather and Traffic multiplier adjustments.
 - Distance calculation via Haversine formula.
-- Final price computation: Distance * base_price * weather_multiplier * traffic_multiplier.
+- Minimum fare rule.
+- Repeat trip calculation.
+- Detailed fare breakdown.
+- Recent location history.
 """
 
 import sys
 import math
+import json
+from pathlib import Path
+
 import requests
 import questionary
 from questionary import Style
@@ -36,6 +42,11 @@ USER_AGENT = "GrabPricingCLI/1.0 (terminal_fare_calculator)"
 
 BASE_PRICE_PER_KM = 2.50
 MINIMUM_FARE = 4.00
+
+MAX_RECENT_LOCATIONS = 5
+RECENT_LOCATIONS_FILE = (
+    Path(__file__).resolve().parent / "recent_locations.json"
+)
 
 
 MALAYSIA_STATES = [
@@ -91,6 +102,80 @@ TRAFFIC_OPTIONS = {
 }
 
 
+def load_recent_locations() -> list[dict]:
+    """Load saved recent locations from the local JSON file."""
+
+    if not RECENT_LOCATIONS_FILE.exists():
+        return []
+
+    try:
+        with RECENT_LOCATIONS_FILE.open(
+            "r",
+            encoding="utf-8",
+        ) as file:
+            data = json.load(file)
+
+        if isinstance(data, list):
+            return data
+
+    except (json.JSONDecodeError, OSError):
+        print(
+            "\n[!] Could not read recent locations. "
+            "Starting with an empty history."
+        )
+
+    return []
+
+
+def save_recent_locations(locations: list[dict]) -> None:
+    """Save recent locations to the local JSON file."""
+
+    try:
+        with RECENT_LOCATIONS_FILE.open(
+            "w",
+            encoding="utf-8",
+        ) as file:
+            json.dump(
+                locations[:MAX_RECENT_LOCATIONS],
+                file,
+                indent=4,
+                ensure_ascii=False,
+            )
+
+    except OSError as e:
+        print(
+            f"\n[!] Could not save recent locations: {e}"
+        )
+
+
+def add_recent_location(location: dict) -> None:
+    """Add a selected location to the recent location history."""
+
+    locations = load_recent_locations()
+
+    # Remove an existing copy of the same location
+    locations = [
+        saved_location
+        for saved_location in locations
+        if not (
+            saved_location.get("lat") == location.get("lat")
+            and saved_location.get("lon") == location.get("lon")
+        )
+    ]
+
+    # Add newest location to the front
+    locations.insert(
+        0,
+        {
+            "display_name": location["display_name"],
+            "lat": location["lat"],
+            "lon": location["lon"],
+        },
+    )
+
+    save_recent_locations(locations)
+
+
 def haversine_distance(
     lat1: float,
     lon1: float,
@@ -99,7 +184,7 @@ def haversine_distance(
 ) -> float:
     """Compute great-circle distance between two points on Earth in kilometers."""
 
-    r = 6371.0  # Earth's mean radius in km
+    r = 6371.0
 
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
@@ -131,7 +216,6 @@ def query_nominatim(
     search_q = query.strip()
 
     if state and state != "All / Other (Worldwide)":
-        # Include state in query context if not already present
         if state.lower() not in search_q.lower():
             search_q = f"{search_q}, {state}"
 
@@ -156,12 +240,12 @@ def query_nominatim(
 
         response.raise_for_status()
 
-        results = response.json()
-
-        return results
+        return response.json()
 
     except requests.RequestException as e:
-        print(f"\n[!] Error connecting to Nominatim server: {e}")
+        print(
+            f"\n[!] Error connecting to Nominatim server: {e}"
+        )
         return []
 
 
@@ -169,7 +253,73 @@ def prompt_location_search(
     label: str,
     state: str,
 ) -> dict:
-    """Prompt user to type address, search Nominatim, and select or amend query."""
+    """
+    Prompt user to select a recent location or search for a new one.
+    """
+
+    recent_locations = load_recent_locations()
+
+    # Show recent locations when available
+    if recent_locations:
+        recent_choices = [
+            "🔎 Search for a new location"
+        ]
+
+        recent_map = {}
+
+        for index, location in enumerate(
+            recent_locations,
+            start=1,
+        ):
+            display_name = location["display_name"]
+
+            short_name = (
+                display_name
+                if len(display_name) <= 80
+                else display_name[:77] + "..."
+            )
+
+            choice = (
+                f"🕘 {index}. {short_name}"
+            )
+
+            recent_choices.append(choice)
+            recent_map[choice] = location
+
+        recent_choices.append("❌ Cancel")
+
+        selected_recent = questionary.select(
+            f"{label} location:",
+            choices=recent_choices,
+            style=CUSTOM_STYLE,
+        ).ask()
+
+        if selected_recent is None:
+            print("\nOperation cancelled.")
+            sys.exit(0)
+
+        if selected_recent == "❌ Cancel":
+            print("\nOperation cancelled.")
+            sys.exit(0)
+
+        if selected_recent != "🔎 Search for a new location":
+            selected_location = recent_map[
+                selected_recent
+            ]
+
+            print(
+                f"✓ Using recent {label}: "
+                f"{selected_location['display_name']} "
+                f"[{selected_location['lat']:.5f}, "
+                f"{selected_location['lon']:.5f}]"
+            )
+
+            # Move selected location to the top of history
+            add_recent_location(
+                selected_location
+            )
+
+            return selected_location
 
     query = ""
 
@@ -189,10 +339,15 @@ def prompt_location_search(
         query = query_input.strip()
 
         if not query:
-            print("Please enter a non-empty search term.")
+            print(
+                "Please enter a non-empty search term."
+            )
             continue
 
-        print(f"🔎 Polling Nominatim server for '{query}'...")
+        print(
+            f"🔎 Polling Nominatim server "
+            f"for '{query}'..."
+        )
 
         results = query_nominatim(
             query,
@@ -201,7 +356,8 @@ def prompt_location_search(
 
         if not results:
             print(
-                f"⚠️  No matching locations found for '{query}'."
+                f"⚠️  No matching locations found "
+                f"for '{query}'."
             )
 
             action = questionary.select(
@@ -213,7 +369,9 @@ def prompt_location_search(
                 style=CUSTOM_STYLE,
             ).ask()
 
-            if action == "✏️  Amend search query and try again":
+            if action == (
+                "✏️  Amend search query and try again"
+            ):
                 continue
 
             print("\nExiting.")
@@ -222,7 +380,7 @@ def prompt_location_search(
         choices = []
         result_map = {}
 
-        for idx, item in enumerate(results):
+        for index, item in enumerate(results):
             display_name = item.get(
                 "display_name",
                 "",
@@ -243,12 +401,14 @@ def prompt_location_search(
             )
 
             choice_label = (
-                f"{idx + 1}. "
+                f"{index + 1}. "
                 f"{short_name} "
                 f"({lat:.4f}, {lon:.4f})"
             )
 
-            choices.append(choice_label)
+            choices.append(
+                choice_label
+            )
 
             result_map[choice_label] = {
                 "display_name": display_name,
@@ -267,11 +427,17 @@ def prompt_location_search(
             style=CUSTOM_STYLE,
         ).ask()
 
-        if selected is None or selected == "❌ Cancel":
+        if selected is None:
             print("\nOperation cancelled.")
             sys.exit(0)
 
-        if selected == "✏️  Amend query and search again":
+        if selected == "❌ Cancel":
+            print("\nOperation cancelled.")
+            sys.exit(0)
+
+        if selected == (
+            "✏️  Amend query and search again"
+        ):
             continue
 
         selected_loc = result_map[selected]
@@ -283,6 +449,11 @@ def prompt_location_search(
             f"{selected_loc['lon']:.5f}]"
         )
 
+        # Save newly selected location
+        add_recent_location(
+            selected_loc
+        )
+
         return selected_loc
 
 
@@ -290,14 +461,22 @@ def print_banner():
     """Display program header."""
 
     print("=" * 72)
-    print("  🚗 GRAB FARE ESTIMATOR & NOMINATIM GEOCODING CLI")
+    print(
+        "  🚗 GRAB FARE ESTIMATOR "
+        "& NOMINATIM GEOCODING CLI"
+    )
     print("=" * 72)
+
     print(
-        "  • Reverse geocodes your address via OpenStreetMap Nominatim."
+        "  • Reverse geocodes your address "
+        "via OpenStreetMap Nominatim."
     )
+
     print(
-        "  • Computes trip distance, surge multipliers, and estimated fare."
+        "  • Computes trip distance, surge "
+        "multipliers, and estimated fare."
     )
+
     print("=" * 72 + "\n")
 
 
@@ -335,33 +514,39 @@ def print_receipt(
     print("=" * 72)
 
     print(
-        f"📍 Pickup Location   : {pickup['display_name']}"
+        f"📍 Pickup Location   : "
+        f"{pickup['display_name']}"
     )
 
     print(
         f"   Coordinates       : "
-        f"{pickup['lat']:.5f}, {pickup['lon']:.5f}"
+        f"{pickup['lat']:.5f}, "
+        f"{pickup['lon']:.5f}"
     )
 
     print("-" * 72)
 
     print(
-        f"🏁 Destination       : {dest['display_name']}"
+        f"🏁 Destination       : "
+        f"{dest['display_name']}"
     )
 
     print(
         f"   Coordinates       : "
-        f"{dest['lat']:.5f}, {dest['lon']:.5f}"
+        f"{dest['lat']:.5f}, "
+        f"{dest['lon']:.5f}"
     )
 
     print("-" * 72)
 
     print(
-        f"📏 Estimated Distance: {distance_km:.2f} km"
+        f"📏 Estimated Distance: "
+        f"{distance_km:.2f} km"
     )
 
     print(
-        f"💵 Base Rate         : RM {base_price:.2f} / km"
+        f"💵 Base Rate         : "
+        f"RM {base_price:.2f} / km"
     )
 
     print(
@@ -381,15 +566,18 @@ def print_receipt(
     print("-" * 72)
 
     print(
-        f"Base Fare           : RM {base_fare:.2f}"
+        f"Base Fare           : "
+        f"RM {base_fare:.2f}"
     )
 
     print(
-        f"Weather Surcharge   : RM {weather_surcharge:.2f}"
+        f"Weather Surcharge   : "
+        f"RM {weather_surcharge:.2f}"
     )
 
     print(
-        f"Traffic Surcharge   : RM {traffic_surcharge:.2f}"
+        f"Traffic Surcharge   : "
+        f"RM {traffic_surcharge:.2f}"
     )
 
     print("-" * 72)
@@ -400,7 +588,8 @@ def print_receipt(
     )
 
     print(
-        f"Calculation : {distance_km:.2f} km * "
+        f"Calculation : "
+        f"{distance_km:.2f} km * "
         f"RM {base_price:.2f} * "
         f"{weather_mult:.2f} * "
         f"{traffic_mult:.2f}"
@@ -409,7 +598,8 @@ def print_receipt(
     print("=" * 72)
 
     print(
-        f"💰 ESTIMATED FARE   : RM {final_price:.2f}"
+        f"💰 ESTIMATED FARE   : "
+        f"RM {final_price:.2f}"
     )
 
     print("=" * 72 + "\n")
@@ -430,31 +620,43 @@ def main():
             print("\nOperation cancelled.")
             sys.exit(0)
 
-        print(f"Selected Region: {state}\n")
+        print(
+            f"Selected Region: {state}\n"
+        )
 
         # Allow the user to calculate multiple trips
         while True:
 
             # Step 2: Pickup location geocoding
-            print("Step 2: Geocode Pickup Location")
+            print(
+                "Step 2: Geocode Pickup Location"
+            )
+
             pickup_loc = prompt_location_search(
                 "Pickup",
                 state,
             )
 
             # Step 3: Destination location geocoding
-            print("\nStep 3: Geocode Destination Location")
+            print(
+                "\nStep 3: Geocode Destination Location"
+            )
+
             dest_loc = prompt_location_search(
                 "Destination",
                 state,
             )
 
             # Step 4: Weather condition
-            print("\nStep 4: Weather Condition")
+            print(
+                "\nStep 4: Weather Condition"
+            )
 
             weather_choice = questionary.select(
                 "Select current weather condition:",
-                choices=list(WEATHER_OPTIONS.keys()),
+                choices=list(
+                    WEATHER_OPTIONS.keys()
+                ),
                 style=CUSTOM_STYLE,
             ).ask()
 
@@ -467,11 +669,15 @@ def main():
             ]
 
             # Step 5: Traffic condition
-            print("\nStep 5: Traffic Condition")
+            print(
+                "\nStep 5: Traffic Condition"
+            )
 
             traffic_choice = questionary.select(
                 "Select current traffic condition:",
-                choices=list(TRAFFIC_OPTIONS.keys()),
+                choices=list(
+                    TRAFFIC_OPTIONS.keys()
+                ),
                 style=CUSTOM_STYLE,
             ).ask()
 
@@ -491,7 +697,7 @@ def main():
                 dest_loc["lon"],
             )
 
-            # Calculate the normal fare
+            # Calculate normal fare
             calculated_price = (
                 distance_km
                 * BASE_PRICE_PER_KM
@@ -505,7 +711,6 @@ def main():
                 MINIMUM_FARE,
             )
 
-            # Inform user when minimum fare is applied
             if calculated_price < MINIMUM_FARE:
                 print(
                     f"\nℹ️ Minimum fare applied: "
@@ -540,11 +745,16 @@ def main():
                 break
 
             print("\n" + "-" * 72)
-            print("                     NEW TRIP CALCULATION")
+            print(
+                "                     NEW TRIP CALCULATION"
+            )
             print("-" * 72 + "\n")
 
     except KeyboardInterrupt:
-        print("\n[!] Program interrupted. Goodbye!")
+        print(
+            "\n[!] Program interrupted. Goodbye!"
+        )
+
         sys.exit(0)
 
 
