@@ -3,19 +3,21 @@ Grab-Style Geocoding & Ride Fare Calculation CLI.
 
 Features:
 - State selection to contextualize address queries.
-- Nominatim OpenStreetMap search API for geocoding human-readable addresses to coordinates.
-- Interactive questionary selection with search amendment / re-query capabilities.
-- Weather and Traffic multiplier adjustments.
-- Distance calculation via Haversine formula.
-- Minimum fare rule.
-- Repeat trip calculation.
-- Detailed fare breakdown.
+- Nominatim OpenStreetMap search API for geocoding human-readable addresses.
+- Interactive location selection with search amendment.
 - Recent location history.
+- Weather and traffic multiplier adjustments.
+- Distance calculation using the Haversine formula.
+- Minimum fare rule.
+- Detailed fare breakdown.
+- Trip history.
+- Repeat trip calculation.
 """
 
 import sys
 import math
 import json
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -44,8 +46,14 @@ BASE_PRICE_PER_KM = 2.50
 MINIMUM_FARE = 4.00
 
 MAX_RECENT_LOCATIONS = 5
+MAX_TRIP_HISTORY = 10
+
 RECENT_LOCATIONS_FILE = (
     Path(__file__).resolve().parent / "recent_locations.json"
+)
+
+TRIP_HISTORY_FILE = (
+    Path(__file__).resolve().parent / "trip_history.json"
 )
 
 
@@ -103,7 +111,7 @@ TRAFFIC_OPTIONS = {
 
 
 def load_recent_locations() -> list[dict]:
-    """Load saved recent locations from the local JSON file."""
+    """Load saved recent locations."""
 
     if not RECENT_LOCATIONS_FILE.exists():
         return []
@@ -120,15 +128,16 @@ def load_recent_locations() -> list[dict]:
 
     except (json.JSONDecodeError, OSError):
         print(
-            "\n[!] Could not read recent locations. "
-            "Starting with an empty history."
+            "\n[!] Could not read recent locations."
         )
 
     return []
 
 
-def save_recent_locations(locations: list[dict]) -> None:
-    """Save recent locations to the local JSON file."""
+def save_recent_locations(
+    locations: list[dict],
+) -> None:
+    """Save recent locations."""
 
     try:
         with RECENT_LOCATIONS_FILE.open(
@@ -148,12 +157,13 @@ def save_recent_locations(locations: list[dict]) -> None:
         )
 
 
-def add_recent_location(location: dict) -> None:
-    """Add a selected location to the recent location history."""
+def add_recent_location(
+    location: dict,
+) -> None:
+    """Add a selected location to recent history."""
 
     locations = load_recent_locations()
 
-    # Remove an existing copy of the same location
     locations = [
         saved_location
         for saved_location in locations
@@ -163,7 +173,6 @@ def add_recent_location(location: dict) -> None:
         )
     ]
 
-    # Add newest location to the front
     locations.insert(
         0,
         {
@@ -176,13 +185,154 @@ def add_recent_location(location: dict) -> None:
     save_recent_locations(locations)
 
 
+def load_trip_history() -> list[dict]:
+    """Load saved trip history."""
+
+    if not TRIP_HISTORY_FILE.exists():
+        return []
+
+    try:
+        with TRIP_HISTORY_FILE.open(
+            "r",
+            encoding="utf-8",
+        ) as file:
+            data = json.load(file)
+
+        if isinstance(data, list):
+            return data
+
+    except (json.JSONDecodeError, OSError):
+        print(
+            "\n[!] Could not read trip history."
+        )
+
+    return []
+
+
+def save_trip_history(
+    history: list[dict],
+) -> None:
+    """Save trip history."""
+
+    try:
+        with TRIP_HISTORY_FILE.open(
+            "w",
+            encoding="utf-8",
+        ) as file:
+            json.dump(
+                history[:MAX_TRIP_HISTORY],
+                file,
+                indent=4,
+                ensure_ascii=False,
+            )
+
+    except OSError as e:
+        print(
+            f"\n[!] Could not save trip history: {e}"
+        )
+
+
+def add_trip_history(
+    pickup: dict,
+    destination: dict,
+    distance_km: float,
+    weather_name: str,
+    traffic_name: str,
+    final_price: float,
+) -> None:
+    """Save a completed trip to history."""
+
+    history = load_trip_history()
+
+    new_trip = {
+        "timestamp": datetime.now().strftime(
+            "%Y-%m-%d %H:%M"
+        ),
+        "pickup": pickup["display_name"],
+        "destination": destination["display_name"],
+        "distance_km": round(distance_km, 2),
+        "weather": weather_name,
+        "traffic": traffic_name,
+        "fare": round(final_price, 2),
+    }
+
+    history.insert(
+        0,
+        new_trip,
+    )
+
+    save_trip_history(history)
+
+
+def display_trip_history() -> None:
+    """Display previous fare estimates."""
+
+    history = load_trip_history()
+
+    print("\n" + "=" * 72)
+    print(
+        "                         TRIP HISTORY"
+    )
+    print("=" * 72)
+
+    if not history:
+        print(
+            "\nNo previous trips have been recorded yet."
+        )
+
+        print("=" * 72 + "\n")
+        return
+
+    for index, trip in enumerate(
+        history,
+        start=1,
+    ):
+        print(
+            f"\n#{index}  {trip['timestamp']}"
+        )
+
+        print(
+            f"📍 Pickup      : {trip['pickup']}"
+        )
+
+        print(
+            f"🏁 Destination : {trip['destination']}"
+        )
+
+        print(
+            f"📏 Distance    : "
+            f"{trip['distance_km']:.2f} km"
+        )
+
+        print(
+            f"🌦️ Weather    : "
+            f"{trip['weather']}"
+        )
+
+        print(
+            f"🚦 Traffic     : "
+            f"{trip['traffic']}"
+        )
+
+        print(
+            f"💰 Fare        : "
+            f"RM {trip['fare']:.2f}"
+        )
+
+        print("-" * 72)
+
+    input(
+        "\nPress Enter to return to the main menu..."
+    )
+
+
 def haversine_distance(
     lat1: float,
     lon1: float,
     lat2: float,
     lon2: float,
 ) -> float:
-    """Compute great-circle distance between two points on Earth in kilometers."""
+    """Compute great-circle distance in kilometers."""
 
     r = 6371.0
 
@@ -211,7 +361,7 @@ def query_nominatim(
     query: str,
     state: str = None,
 ) -> list[dict]:
-    """Query Nominatim search API for geocoding suggestions."""
+    """Query Nominatim search API."""
 
     search_q = query.strip()
 
@@ -246,6 +396,7 @@ def query_nominatim(
         print(
             f"\n[!] Error connecting to Nominatim server: {e}"
         )
+
         return []
 
 
@@ -253,13 +404,10 @@ def prompt_location_search(
     label: str,
     state: str,
 ) -> dict:
-    """
-    Prompt user to select a recent location or search for a new one.
-    """
+    """Select a recent location or search for a new one."""
 
     recent_locations = load_recent_locations()
 
-    # Show recent locations when available
     if recent_locations:
         recent_choices = [
             "🔎 Search for a new location"
@@ -284,9 +432,12 @@ def prompt_location_search(
             )
 
             recent_choices.append(choice)
+
             recent_map[choice] = location
 
-        recent_choices.append("❌ Cancel")
+        recent_choices.append(
+            "❌ Cancel"
+        )
 
         selected_recent = questionary.select(
             f"{label} location:",
@@ -302,7 +453,9 @@ def prompt_location_search(
             print("\nOperation cancelled.")
             sys.exit(0)
 
-        if selected_recent != "🔎 Search for a new location":
+        if selected_recent != (
+            "🔎 Search for a new location"
+        ):
             selected_location = recent_map[
                 selected_recent
             ]
@@ -314,7 +467,6 @@ def prompt_location_search(
                 f"{selected_location['lon']:.5f}]"
             )
 
-            # Move selected location to the top of history
             add_recent_location(
                 selected_location
             )
@@ -406,9 +558,7 @@ def prompt_location_search(
                 f"({lat:.4f}, {lon:.4f})"
             )
 
-            choices.append(
-                choice_label
-            )
+            choices.append(choice_label)
 
             result_map[choice_label] = {
                 "display_name": display_name,
@@ -419,7 +569,10 @@ def prompt_location_search(
         choices.append(
             "✏️  Amend query and search again"
         )
-        choices.append("❌ Cancel")
+
+        choices.append(
+            "❌ Cancel"
+        )
 
         selected = questionary.select(
             f"Select matching {label} location:",
@@ -449,7 +602,6 @@ def prompt_location_search(
             f"{selected_loc['lon']:.5f}]"
         )
 
-        # Save newly selected location
         add_recent_location(
             selected_loc
         )
@@ -491,9 +643,11 @@ def print_receipt(
     traffic_mult: float,
     final_price: float,
 ):
-    """Print an itemized trip summary and fare calculation."""
+    """Print an itemized trip summary."""
 
-    base_fare = distance_km * base_price
+    base_fare = (
+        distance_km * base_price
+    )
 
     weather_surcharge = (
         base_fare * (weather_mult - 1)
@@ -504,12 +658,13 @@ def print_receipt(
     )
 
     traffic_surcharge = (
-        fare_after_weather * (traffic_mult - 1)
+        fare_after_weather
+        * (traffic_mult - 1)
     )
 
     print("\n" + "=" * 72)
     print(
-        "                     TRIP SUMMARY & FARE RECEIPT                     "
+        "                     TRIP SUMMARY & FARE RECEIPT"
     )
     print("=" * 72)
 
@@ -561,7 +716,9 @@ def print_receipt(
 
     print("-" * 72)
 
-    print("                     FARE BREAKDOWN")
+    print(
+        "                     FARE BREAKDOWN"
+    )
 
     print("-" * 72)
 
@@ -605,150 +762,177 @@ def print_receipt(
     print("=" * 72 + "\n")
 
 
+def calculate_trip(state: str) -> None:
+    """Run one complete fare estimation."""
+
+    # Step 2: Pickup location
+    print(
+        "Step 2: Geocode Pickup Location"
+    )
+
+    pickup_loc = prompt_location_search(
+        "Pickup",
+        state,
+    )
+
+    # Step 3: Destination location
+    print(
+        "\nStep 3: Geocode Destination Location"
+    )
+
+    dest_loc = prompt_location_search(
+        "Destination",
+        state,
+    )
+
+    # Step 4: Weather
+    print(
+        "\nStep 4: Weather Condition"
+    )
+
+    weather_choice = questionary.select(
+        "Select current weather condition:",
+        choices=list(
+            WEATHER_OPTIONS.keys()
+        ),
+        style=CUSTOM_STYLE,
+    ).ask()
+
+    if weather_choice is None:
+        print("\nOperation cancelled.")
+        return
+
+    weather_info = WEATHER_OPTIONS[
+        weather_choice
+    ]
+
+    # Step 5: Traffic
+    print(
+        "\nStep 5: Traffic Condition"
+    )
+
+    traffic_choice = questionary.select(
+        "Select current traffic condition:",
+        choices=list(
+            TRAFFIC_OPTIONS.keys()
+        ),
+        style=CUSTOM_STYLE,
+    ).ask()
+
+    if traffic_choice is None:
+        print("\nOperation cancelled.")
+        return
+
+    traffic_info = TRAFFIC_OPTIONS[
+        traffic_choice
+    ]
+
+    # Step 6: Calculate distance
+    distance_km = haversine_distance(
+        pickup_loc["lat"],
+        pickup_loc["lon"],
+        dest_loc["lat"],
+        dest_loc["lon"],
+    )
+
+    calculated_price = (
+        distance_km
+        * BASE_PRICE_PER_KM
+        * weather_info["multiplier"]
+        * traffic_info["multiplier"]
+    )
+
+    final_price = max(
+        calculated_price,
+        MINIMUM_FARE,
+    )
+
+    if calculated_price < MINIMUM_FARE:
+        print(
+            f"\nℹ️ Minimum fare applied: "
+            f"RM {MINIMUM_FARE:.2f}"
+        )
+
+    # Step 7: Receipt
+    print_receipt(
+        pickup=pickup_loc,
+        dest=dest_loc,
+        distance_km=distance_km,
+        base_price=BASE_PRICE_PER_KM,
+        weather_name=weather_info["name"],
+        weather_mult=weather_info["multiplier"],
+        traffic_name=traffic_info["name"],
+        traffic_mult=traffic_info["multiplier"],
+        final_price=final_price,
+    )
+
+    # Save completed trip
+    add_trip_history(
+        pickup=pickup_loc,
+        destination=dest_loc,
+        distance_km=distance_km,
+        weather_name=weather_info["name"],
+        traffic_name=traffic_info["name"],
+        final_price=final_price,
+    )
+
+
 def main():
     try:
         print_banner()
 
-        # Step 1: Select state
-        state = questionary.select(
-            "Step 1: Select your State / Region for geocoding context:",
-            choices=MALAYSIA_STATES,
-            style=CUSTOM_STYLE,
-        ).ask()
-
-        if state is None:
-            print("\nOperation cancelled.")
-            sys.exit(0)
-
-        print(
-            f"Selected Region: {state}\n"
-        )
-
-        # Allow the user to calculate multiple trips
         while True:
 
-            # Step 2: Pickup location geocoding
-            print(
-                "Step 2: Geocode Pickup Location"
-            )
-
-            pickup_loc = prompt_location_search(
-                "Pickup",
-                state,
-            )
-
-            # Step 3: Destination location geocoding
-            print(
-                "\nStep 3: Geocode Destination Location"
-            )
-
-            dest_loc = prompt_location_search(
-                "Destination",
-                state,
-            )
-
-            # Step 4: Weather condition
-            print(
-                "\nStep 4: Weather Condition"
-            )
-
-            weather_choice = questionary.select(
-                "Select current weather condition:",
-                choices=list(
-                    WEATHER_OPTIONS.keys()
-                ),
+            # Main menu
+            menu_choice = questionary.select(
+                "What would you like to do?",
+                choices=[
+                    "🚗 Calculate fare",
+                    "📜 View trip history",
+                    "❌ Exit",
+                ],
                 style=CUSTOM_STYLE,
             ).ask()
 
-            if weather_choice is None:
-                print("\nOperation cancelled.")
-                sys.exit(0)
-
-            weather_info = WEATHER_OPTIONS[
-                weather_choice
-            ]
-
-            # Step 5: Traffic condition
-            print(
-                "\nStep 5: Traffic Condition"
-            )
-
-            traffic_choice = questionary.select(
-                "Select current traffic condition:",
-                choices=list(
-                    TRAFFIC_OPTIONS.keys()
-                ),
-                style=CUSTOM_STYLE,
-            ).ask()
-
-            if traffic_choice is None:
-                print("\nOperation cancelled.")
-                sys.exit(0)
-
-            traffic_info = TRAFFIC_OPTIONS[
-                traffic_choice
-            ]
-
-            # Step 6: Calculate distance
-            distance_km = haversine_distance(
-                pickup_loc["lat"],
-                pickup_loc["lon"],
-                dest_loc["lat"],
-                dest_loc["lon"],
-            )
-
-            # Calculate normal fare
-            calculated_price = (
-                distance_km
-                * BASE_PRICE_PER_KM
-                * weather_info["multiplier"]
-                * traffic_info["multiplier"]
-            )
-
-            # Apply minimum fare
-            final_price = max(
-                calculated_price,
-                MINIMUM_FARE,
-            )
-
-            if calculated_price < MINIMUM_FARE:
-                print(
-                    f"\nℹ️ Minimum fare applied: "
-                    f"RM {MINIMUM_FARE:.2f}"
-                )
-
-            # Step 7: Display summary receipt
-            print_receipt(
-                pickup=pickup_loc,
-                dest=dest_loc,
-                distance_km=distance_km,
-                base_price=BASE_PRICE_PER_KM,
-                weather_name=weather_info["name"],
-                weather_mult=weather_info["multiplier"],
-                traffic_name=traffic_info["name"],
-                traffic_mult=traffic_info["multiplier"],
-                final_price=final_price,
-            )
-
-            # Step 8: Ask whether to calculate another trip
-            calculate_again = questionary.confirm(
-                "Would you like to calculate another trip?",
-                default=True,
-                style=CUSTOM_STYLE,
-            ).ask()
-
-            if not calculate_again:
+            if menu_choice == "❌ Exit":
                 print(
                     "\nThank you for using the "
                     "Grab Fare Estimator. Goodbye!"
                 )
                 break
 
-            print("\n" + "-" * 72)
+            if menu_choice == "📜 View trip history":
+                display_trip_history()
+                continue
+
+            # Step 1: Select state
+            state = questionary.select(
+                "Step 1: Select your State / Region for geocoding context:",
+                choices=MALAYSIA_STATES,
+                style=CUSTOM_STYLE,
+            ).ask()
+
+            if state is None:
+                print("\nOperation cancelled.")
+                continue
+
             print(
-                "                     NEW TRIP CALCULATION"
+                f"Selected Region: {state}\n"
             )
-            print("-" * 72 + "\n")
+
+            calculate_trip(state)
+
+            # Ask about another trip
+            calculate_again = questionary.confirm(
+                "\nWould you like to calculate another trip?",
+                default=True,
+                style=CUSTOM_STYLE,
+            ).ask()
+
+            if not calculate_again:
+                print(
+                    "\nReturning to the main menu..."
+                )
 
     except KeyboardInterrupt:
         print(

@@ -21,4 +21,5 @@ ENV/
 .DS_Store
 Thumbs.db
 
-recent_locations.json
+recent_locations.json]
+trip_history.json
